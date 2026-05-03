@@ -21,7 +21,7 @@ Cheshire Cat uses LangChain's `RecursiveCharacterTextSplitter` with tiktoken, me
 - Chunk size is configurable via `rag.chunk_size_tokens` (default `256`).
 - Overlap is configurable via `rag.chunk_overlap_tokens` (default `64`).
 - Small adjacent sections are merged forward to avoid tiny retrieval units.
-- Fenced code blocks are kept atomic; oversize code blocks are emitted whole rather than torn apart.
+- Fenced code blocks are isolated from surrounding prose. Oversized supported code fences are split with code-aware strategies rather than emitted as one giant chunk; unsupported languages remain atomic.
 - Markdown tables are detected with the GFM parser rather than line-prefix heuristics. Tables that fit the token budget stay atomic; oversized tables are split by row groups with the original header and delimiter repeated in every table chunk.
 - Each chunk carries structural metadata: `section_path`, `section_anchor`, `byte_offset`, `char_offset`, `chunk_index`.
 - Embeddings are generated from enriched text (`Document Title > Section Path\n\nChunk`), while prompt/UI display uses the clean chunk text.
@@ -32,7 +32,7 @@ Cheshire Cat uses LangChain's `RecursiveCharacterTextSplitter` with tiktoken, me
 The implementation uses `tiktoken-rs` with `cl100k_base`, which is a good default approximation for the embedding models currently supported by Lekton.
 
 ```toml
-text-splitter = { version = "...", features = ["markdown", "tiktoken-rs"] }
+text-splitter = { version = "...", features = ["code", "markdown", "tiktoken-rs"] }
 ```
 
 ### 2. Configuration
@@ -60,9 +60,26 @@ Key properties:
 - H1/H2 headings define raw parent sections.
 - Very small adjacent sections are merged before token splitting.
 - Token overlap is implemented through `text-splitter`'s overlap support.
-- Parser-derived protected ranges prevent splits inside code blocks and GFM tables, including tables without outer pipes and cells containing escaped or inline-code pipes.
+- Parser-derived protected ranges prevent generic splits inside GFM tables and code blocks, including tables without outer pipes and cells containing escaped or inline-code pipes.
+- Code fences route through a dedicated splitter before the generic Markdown splitter. Each synthetic code chunk is rebuilt as a valid fenced Markdown block with the original info string and closing fence preserved.
 - Oversized tables bypass normal overlap splitting and are chunked only at row boundaries. Synthetic table chunks use the first original data row offset and repeat the table header for retrieval context.
 - Output is typed (`SplitChunk`) instead of plain `String`.
+
+### 3.1 Code Fence Strategies
+
+| Fence language | Strategy | Repeated context |
+|----------------|----------|------------------|
+| `rust`, `rs` | Tree-sitter AST splitting via `CodeSplitter` | leading crate attributes, module docs, `use`, `pub use`, `extern crate` |
+| `python`, `py` | Tree-sitter AST splitting via `CodeSplitter` | leading comments and imports |
+| `javascript`, `js`, `jsx` | Tree-sitter AST splitting via `CodeSplitter` | leading imports |
+| `typescript`, `ts`, `tsx` | Tree-sitter AST splitting via `CodeSplitter` | leading imports |
+| `go` | Tree-sitter AST splitting via `CodeSplitter` | `package` and import declarations |
+| `java` | Tree-sitter AST splitting via `CodeSplitter` | package and import declarations |
+| `json` | Tree-sitter AST splitting via `CodeSplitter` | none |
+| `yaml`, `yml`, `toml` | conservative top-level line-group splitting | none |
+| `bash`, `sh`, `shell`, `zsh` | conservative blank-line group splitting | none |
+| `sql` | statement splitting on terminating semicolons | none |
+| unknown | atomic fallback | none |
 
 ### 4. Ingestion and Retrieval Metadata
 Indexing stores the display text in Qdrant payload and computes embeddings from an enriched text prefix that includes the document title and section hierarchy. This supports better retrieval without polluting the prompt context shown to the LLM.
@@ -72,14 +89,16 @@ The structural metadata introduced by this enhancement is also consumed by later
 - optional parent-section expansion via `rag.expand_to_parent`
 
 ### 5. Reindex Consideration
-Changing chunk size, overlap, table splitting policy, or chunk payload structure changes the vectors and metadata stored in Qdrant. After deployment, a full reindex (`POST /api/v1/admin/rag/reindex`) is required.
+Changing chunk size, overlap, code/table splitting policy, or chunk payload structure changes the vectors and metadata stored in Qdrant. After deployment, a full reindex (`POST /api/v1/admin/rag/reindex`) is required.
 
 ### 6. Update Tests
 `src/rag/splitter.rs` now includes tests covering:
 - token-aware splitting
 - stable chunk indexing
 - section path / anchor extraction
-- atomic fenced-code and table handling
+- fenced-code isolation and code-aware splitting for supported languages
+- atomic fallback for unsupported fenced-code languages
+- atomic table handling
 - GFM table detection without outer pipes, escaped pipes, inline-code pipes, invalid delimiters, and block/blank-line termination
 - oversized table row-group splitting with repeated headers
 - UTF-8-safe offset computation when merged sections contain multibyte characters
@@ -87,10 +106,12 @@ Changing chunk size, overlap, table splitting policy, or chunk payload structure
 ## Files to Modify
 | File | Change |
 |------|--------|
-| `Cargo.toml` | Add `tiktoken-rs` feature to `text-splitter` |
+| `Cargo.toml` | Add `code` and `tiktoken-rs` features to `text-splitter`, plus Tree-sitter grammar crates for supported languages |
 | `src/config.rs` | Add `chunk_size_tokens` and `chunk_overlap_tokens` to `RagConfig` |
 | `config/default.toml` | Add default values |
-| `src/rag/splitter.rs` | Replace char-based splitting with typed, heading-aware token splitting |
+| `src/rag/splitter.rs` | Replace char-based splitting with typed, heading-aware token splitting and dispatch special Markdown blocks |
+| `src/rag/splitter_blocks.rs` | Classify fenced code block languages from Markdown parser events |
+| `src/rag/splitter_code.rs` | Split oversized fenced code blocks with Tree-sitter or conservative language-specific fallback strategies |
 | `src/rag/service.rs` | Pass token config to `split_document` and enrich embedding text |
 | `src/rag/vectorstore.rs` | Persist structural metadata in chunk payload |
 

@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- RAG chunking is now code-aware for Markdown code fences. Oversized fenced blocks for Rust, Python, JavaScript, TypeScript/TSX, Go, Java, and JSON are split with Tree-sitter via `text-splitter::CodeSplitter`; YAML, TOML, Shell, and SQL use conservative statement/line-group splitters; unsupported languages remain atomic. Reindex RAG vectors after deployment.
+
 ## [0.24.1] 2026-05-03
 
 ### Fixed
