@@ -1,4 +1,7 @@
-use super::splitter_blocks::{merge_broken_blocks, protected_ranges, table_ranges};
+use super::splitter_blocks::{
+    markdown_blocks, merge_broken_blocks, protected_ranges, MarkdownBlockKind,
+};
+use super::splitter_code::split_code_block;
 use super::splitter_sections::{merge_small_sections, split_into_sections, MIN_SECTION_CHARS};
 use super::splitter_table::split_table_block;
 use text_splitter::{ChunkConfig, MarkdownSplitter};
@@ -96,20 +99,32 @@ pub fn split_document(
 
         let mut safe: Vec<(usize, String)> = Vec::new();
         let mut cursor = 0usize;
-        for table_range in table_ranges(&section.text) {
-            if cursor < table_range.start {
+        for block in markdown_blocks(&section.text) {
+            if cursor < block.range.start {
                 safe.extend(split_regular(
-                    &section.text[cursor..table_range.start],
+                    &section.text[cursor..block.range.start],
                     cursor,
                 ));
             }
-            safe.extend(split_table_block(
-                &section.text[table_range.clone()],
-                table_range.start,
-                chunk_size_tokens,
-                &tokenizer,
-            ));
-            cursor = table_range.end;
+            match block.kind {
+                MarkdownBlockKind::Table => {
+                    safe.extend(split_table_block(
+                        &section.text[block.range.clone()],
+                        block.range.start,
+                        chunk_size_tokens,
+                        &tokenizer,
+                    ));
+                }
+                MarkdownBlockKind::Code { .. } => {
+                    safe.extend(split_code_block(
+                        &section.text[block.range.clone()],
+                        block.range.start,
+                        chunk_size_tokens,
+                        &tokenizer,
+                    ));
+                }
+            }
+            cursor = block.range.end;
         }
         if cursor < section.text.len() {
             safe.extend(split_regular(&section.text[cursor..], cursor));
@@ -149,6 +164,29 @@ mod tests {
             .iter()
             .filter(|chunk| chunk.text.contains(header))
             .collect()
+    }
+
+    fn code_fence_chunks<'a>(chunks: &'a [SplitChunk], language: &str) -> Vec<&'a SplitChunk> {
+        let opening = format!("```{language}");
+        chunks
+            .iter()
+            .filter(|chunk| chunk.text.contains(&opening))
+            .collect()
+    }
+
+    fn assert_valid_code_fence(chunk: &SplitChunk, language: &str) {
+        let opening = format!("```{language}");
+        assert_eq!(chunk.text.matches(&opening).count(), 1);
+        assert_eq!(
+            chunk
+                .text
+                .lines()
+                .filter(|line| line.trim() == "```")
+                .count(),
+            1,
+            "code fence should close exactly once: {}",
+            chunk.text
+        );
     }
 
     fn assert_each_table_chunk_has_header(chunks: &[&SplitChunk], header: &str, delimiter: &str) {
@@ -316,6 +354,78 @@ mod tests {
                 "fence opened and closed count must match within each chunk"
             );
         }
+    }
+
+    #[test]
+    fn code_fence_fixtures_are_isolated_and_valid() {
+        let fixtures = [
+            (
+                "rust",
+                (0..24)
+                    .map(|i| format!("fn example_{i}() {{\n    println!(\"{i}\");\n}}\n"))
+                    .collect::<String>(),
+            ),
+            (
+                "python",
+                (0..24)
+                    .map(|i| format!("def example_{i}():\n    print({i})\n"))
+                    .collect::<String>(),
+            ),
+            (
+                "javascript",
+                (0..24)
+                    .map(|i| format!("function example{i}() {{\n  return {i};\n}}\n"))
+                    .collect::<String>(),
+            ),
+            (
+                "typescript",
+                (0..24)
+                    .map(|i| format!("function example{i}(): number {{\n  return {i};\n}}\n"))
+                    .collect::<String>(),
+            ),
+            (
+                "go",
+                (0..24)
+                    .map(|i| format!("func example{i}() int {{\n\treturn {i}\n}}\n"))
+                    .collect::<String>(),
+            ),
+            (
+                "java",
+                (0..24)
+                    .map(|i| {
+                        format!("class Example{i} {{\n    int value() {{ return {i}; }}\n}}\n")
+                    })
+                    .collect::<String>(),
+            ),
+        ];
+
+        for (language, body) in fixtures {
+            let content = format!("# Section\n\nIntro.\n\n```{language}\n{body}```\n\nOutro.\n");
+            let chunks = split_document(&content, 80, 0);
+            let fence_chunks = code_fence_chunks(&chunks, language);
+
+            assert!(
+                !fence_chunks.is_empty(),
+                "expected at least one {language} code fence chunk"
+            );
+            for chunk in fence_chunks {
+                assert_valid_code_fence(chunk, language);
+                assert!(!chunk.text.contains("Intro."));
+                assert!(!chunk.text.contains("Outro."));
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_code_fence_stays_atomic_when_oversized() {
+        let body = "custom node statement\n".repeat(180);
+        let content = format!("# Section\n\n```customdsl\n{body}```\n");
+        let chunks = split_document(&content, 50, 0);
+        let fence_chunks = code_fence_chunks(&chunks, "customdsl");
+
+        assert_eq!(fence_chunks.len(), 1);
+        assert_valid_code_fence(fence_chunks[0], "customdsl");
+        assert!(fence_chunks[0].text.contains(&body));
     }
 
     #[test]

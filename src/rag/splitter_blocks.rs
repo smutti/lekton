@@ -1,10 +1,12 @@
 use std::ops::Range;
 
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
+
+use super::splitter_code::CodeFenceLanguage;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(in crate::rag) enum MarkdownBlockKind {
-    Code,
+    Code { language: Option<CodeFenceLanguage> },
     Table,
 }
 
@@ -27,10 +29,16 @@ pub(in crate::rag) fn markdown_blocks(text: &str) -> Vec<MarkdownBlock> {
     let mut blocks: Vec<MarkdownBlock> = Parser::new_ext(text, markdown_options())
         .into_offset_iter()
         .filter_map(|(event, range)| match event {
-            Event::Start(Tag::CodeBlock(_)) => Some(MarkdownBlock {
-                kind: MarkdownBlockKind::Code,
-                range,
-            }),
+            Event::Start(Tag::CodeBlock(kind)) => {
+                let language = match kind {
+                    CodeBlockKind::Fenced(info) => CodeFenceLanguage::from_info_string(&info),
+                    CodeBlockKind::Indented => None,
+                };
+                Some(MarkdownBlock {
+                    kind: MarkdownBlockKind::Code { language },
+                    range,
+                })
+            }
             Event::Start(Tag::Table(_)) => Some(MarkdownBlock {
                 kind: MarkdownBlockKind::Table,
                 range,
@@ -52,6 +60,7 @@ pub(in crate::rag) fn protected_ranges(text: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+#[cfg(test)]
 pub(in crate::rag) fn table_ranges(text: &str) -> Vec<Range<usize>> {
     markdown_blocks(text)
         .into_iter()
@@ -156,11 +165,24 @@ mod tests {
         let text = "```\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```\n";
         let blocks = markdown_blocks(text);
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].kind, MarkdownBlockKind::Code);
+        assert_eq!(blocks[0].kind, MarkdownBlockKind::Code { language: None });
         assert_eq!(
             &text[blocks[0].range.clone()],
             "```\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```"
         );
         assert!(table_ranges(text).is_empty());
+    }
+
+    #[test]
+    fn fenced_code_language_is_classified_from_info_string() {
+        let text = "```rs ignore\nfn main() {}\n```\n";
+        let blocks = markdown_blocks(text);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0].kind,
+            MarkdownBlockKind::Code {
+                language: Some(CodeFenceLanguage::Rust)
+            }
+        );
     }
 }

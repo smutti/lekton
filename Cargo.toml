@@ -70,9 +70,16 @@ qdrant-client = { version = "1", optional = true }
 async-openai = { version = "0.35", features = ["embedding", "chat-completion"], optional = true }
 gcp_auth = { version = "0.12.6", optional = true }
 rustls = { version = "0.23", features = ["aws-lc-rs"], optional = true }
-text-splitter = { version = "0.30", features = ["markdown", "tiktoken-rs"], optional = true }
+text-splitter = { version = "0.30", features = ["code", "markdown", "tiktoken-rs"], optional = true }
 tiktoken-rs = { version = "0.11", optional = true }
 tera = { version = "1", optional = true }
+tree-sitter-go = { version = "0.25.0", optional = true }
+tree-sitter-java = { version = "0.23.5", optional = true }
+tree-sitter-javascript = { version = "0.25.0", optional = true }
+tree-sitter-json = { version = "0.24.8", optional = true }
+tree-sitter-python = { version = "0.25.0", optional = true }
+tree-sitter-rust = { version = "0.24.2", optional = true }
+tree-sitter-typescript = { version = "0.23.2", optional = true }
 
 # MCP (Model Context Protocol)
 rmcp = { version = "1.3", features = ["server", "transport-streamable-http-server"], optional = true }
@@ -209,6 +216,13 @@ ssr = [
     "dep:text-splitter",
     "dep:tiktoken-rs",
     "dep:tera",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-java",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-json",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-typescript",
     "dep:rmcp",
     "dep:schemars",
     "dep:clap",
